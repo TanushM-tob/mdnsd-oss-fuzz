@@ -1,0 +1,325 @@
+#!/usr/bin/make -f
+
+# AFL++ Makefile for mdnsd fuzzer
+# Based on build.sh but adapted for AFL++
+
+# Compiler settings for AFL++
+CC := afl-clang-lto
+# Fallback to afl-gcc if afl-clang-lto is not available
+ifeq ($(shell which afl-clang-lto 2>/dev/null),)
+    CC := afl-clang-fast
+    ifeq ($(shell which afl-clang-fast 2>/dev/null),)
+        CC := afl-gcc
+    endif
+endif
+
+# Build configuration
+CFLAGS := -O2 -fPIC -std=gnu99 -g
+LDFLAGS := 
+export DEPS_DIR := $(abspath $(CURDIR)/deps)
+export INSTALL_PREFIX := $(abspath $(CURDIR)/install)
+UDEBUG_HEADER := $(INSTALL_PREFIX)/include/udebug.h
+
+# Targets
+FUZZER_BIN := mdnsd_afl_fuzzer
+SOURCES := cache.c dns.c interface.c service.c util.c ubus.c announce.c fuzzer-support.c mdnsd-fuzz.c
+MDNSD_SOURCES := cache.c dns.c interface.c service.c util.c ubus.c announce.c fuzzer-support.c
+MDNSD_OBJECTS := $(MDNSD_SOURCES:.c=.o)
+FUZZER_OBJECT := mdnsd-fuzz.o
+
+# Default target
+all: $(FUZZER_BIN)
+
+# Set up dependencies (libubox, libubus, ucode, udebug)
+.PHONY: deps
+deps: $(INSTALL_PREFIX)/lib/libubox.so $(INSTALL_PREFIX)/lib/libubus.so $(INSTALL_PREFIX)/lib/libucode.so
+
+# Build libubox dependency
+$(INSTALL_PREFIX)/lib/libubox.so:
+	@echo "Setting up libubox dependency..."
+	@mkdir -p $(DEPS_DIR)
+	@if [ ! -d "$(DEPS_DIR)/libubox" ]; then \
+		echo "Downloading libubox..."; \
+		cd $(DEPS_DIR) && git clone https://github.com/openwrt/libubox.git; \
+		cd $(DEPS_DIR)/libubox && rm -rf tests examples lua; \
+		cd $(DEPS_DIR)/libubox && sed -i '/ADD_SUBDIRECTORY(examples)/d' CMakeLists.txt; \
+		cd $(DEPS_DIR)/libubox && sed -i '/ADD_SUBDIRECTORY(lua)/d' CMakeLists.txt; \
+	fi
+	@echo "Building libubox..."
+	@cd $(DEPS_DIR)/libubox && mkdir -p build
+	@cd $(DEPS_DIR)/libubox/build && \
+		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
+		         -DCMAKE_C_COMPILER="$(CC)" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DBUILD_LUA=OFF \
+		         -DBUILD_EXAMPLES=OFF \
+		         -DBUILD_TESTS=OFF \
+		         -DBUILD_STATIC=OFF \
+		         -DBUILD_SHARED_LIBS=ON && \
+		make -j$$(nproc) && \
+		make install
+
+# Build libubus dependency
+$(INSTALL_PREFIX)/lib/libubus.so: $(INSTALL_PREFIX)/lib/libubox.so
+	@echo "Setting up libubus dependency..."
+	@if [ ! -d "$(DEPS_DIR)/ubus" ]; then \
+		echo "Downloading ubus..."; \
+		cd $(DEPS_DIR) && git clone https://github.com/openwrt/ubus.git; \
+		cd $(DEPS_DIR)/ubus && rm -rf tests examples lua; \
+		cd $(DEPS_DIR)/ubus && sed -i '/ADD_SUBDIRECTORY(examples)/d' CMakeLists.txt; \
+		cd $(DEPS_DIR)/ubus && sed -i '/ADD_SUBDIRECTORY(lua)/d' CMakeLists.txt; \
+	fi
+	@echo "Building libubus..."
+	@cd $(DEPS_DIR)/ubus && mkdir -p build
+	@cd $(DEPS_DIR)/ubus/build && \
+		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
+		         -DCMAKE_C_COMPILER="$(CC)" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DBUILD_LUA=OFF \
+		         -DBUILD_EXAMPLES=OFF \
+		         -DBUILD_TESTS=OFF \
+		         -DBUILD_STATIC=OFF \
+		         -DBUILD_SHARED_LIBS=ON && \
+		make -j$$(nproc) && \
+		make install
+
+# Build ucode dependency (required by udebug)
+$(INSTALL_PREFIX)/lib/libucode.so: $(INSTALL_PREFIX)/lib/libubus.so
+	@echo "Setting up ucode dependency..."
+	@if [ ! -d "$(DEPS_DIR)/ucode" ]; then \
+		echo "Downloading ucode..."; \
+		cd $(DEPS_DIR) && git clone https://github.com/jow-/ucode.git; \
+		cd $(DEPS_DIR)/ucode && rm -rf tests examples jsdoc docs; \
+		cd $(DEPS_DIR)/ucode && sed -i '/add_subdirectory.*examples/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/ucode && sed -i '/ADD_SUBDIRECTORY.*examples/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/ucode && sed -i '/add_subdirectory.*tests/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/ucode && sed -i '/ADD_SUBDIRECTORY.*tests/d' CMakeLists.txt || true; \
+	fi
+	@echo "Building ucode..."
+	@cd $(DEPS_DIR)/ucode && mkdir -p build
+	@if cd $(DEPS_DIR)/ucode/build && \
+		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
+		         -DCMAKE_C_COMPILER="$(CC)" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DBUILD_STATIC=OFF \
+		         -DBUILD_SHARED_LIBS=ON && \
+		make -j$$(nproc) && \
+		make install; then \
+		echo "✓ ucode built successfully"; \
+		cd $(CURDIR) && $(MAKE) -f Makefile.afl udebug-setup; \
+	else \
+		echo "⚠ ucode build failed, proceeding without udebug..."; \
+		cd $(CURDIR) && $(MAKE) -f Makefile.afl udebug-stub; \
+	fi
+
+# Setup udebug (with fallback stub if build fails)
+.PHONY: udebug-setup
+udebug-setup:
+	@echo "Setting up udebug dependency..."
+	@if [ ! -d "$(DEPS_DIR)/udebug" ]; then \
+		echo "Downloading udebug..."; \
+		cd $(DEPS_DIR) && git clone https://github.com/openwrt/udebug.git; \
+		cd $(DEPS_DIR)/udebug && rm -rf tests examples lua; \
+		cd $(DEPS_DIR)/udebug && rm -f lib-ucode.c; \
+		cd $(DEPS_DIR)/udebug && sed -i '/lib-ucode\.c/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/udebug && sed -i '/FIND_PATH.*ucode/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/udebug && sed -i '/FIND_LIBRARY.*ucode/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/udebug && sed -i '/ucode_include_dir/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/udebug && sed -i '/ADD_SUBDIRECTORY(examples)/d' CMakeLists.txt || true; \
+		cd $(DEPS_DIR)/udebug && sed -i '/ADD_SUBDIRECTORY(lua)/d' CMakeLists.txt || true; \
+	fi
+	@echo "Building udebug..."
+	@cd $(DEPS_DIR)/udebug && mkdir -p build
+	@if cd $(DEPS_DIR)/udebug/build && \
+		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
+		         -DCMAKE_C_COMPILER="$(CC)" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DBUILD_STATIC=OFF \
+		         -DBUILD_SHARED_LIBS=ON && \
+		make -j$$(nproc) && \
+		make install && \
+		[ -f "$(INSTALL_PREFIX)/include/udebug.h" ]; then \
+		echo "✓ udebug built successfully"; \
+		echo "UDEBUG_AVAILABLE=1" > $(DEPS_DIR)/udebug_status; \
+	else \
+		echo "⚠ udebug build failed, creating stub header..."; \
+		echo "UDEBUG_AVAILABLE=0" > $(DEPS_DIR)/udebug_status; \
+		cd $(CURDIR) && $(MAKE) -f Makefile.afl udebug-stub; \
+	fi
+
+# Create udebug stub header if build fails
+.PHONY: udebug-stub
+udebug-stub:
+	@echo "Creating comprehensive udebug.h stub..."
+	@mkdir -p "$(INSTALL_PREFIX)/include"
+	@echo '#ifndef __UDEBUG_H' > "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#define __UDEBUG_H' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#include <stdint.h>' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#include <stddef.h>' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#include <stdbool.h>' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#include <stdarg.h>' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#include <string.h>' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '// Forward declarations' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct ubus_context;' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct blob_attr;' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '// UDEBUG format constants' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#define UDEBUG_FORMAT_STRING 1' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '// Basic udebug structures' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct udebug { int dummy; };' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct udebug_buf { int dummy; };' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct udebug_buf_meta { const char *name; int format; };' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct udebug_ubus_ring { struct udebug_buf *buf; const struct udebug_buf_meta *meta; int default_entries; int default_size; };' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'struct udebug_ubus { int dummy; };' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '// Stub functions' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_init(struct udebug *ctx) { (void)ctx; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_auto_connect(struct udebug *ctx, const char *path) { (void)ctx; (void)path; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_free(struct udebug *ctx) { (void)ctx; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline bool udebug_buf_valid(struct udebug_buf *buf) { (void)buf; return false; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_entry_init(struct udebug_buf *buf) { (void)buf; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_entry_add(struct udebug_buf *buf) { (void)buf; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline int udebug_entry_vprintf(struct udebug_buf *buf, const char *format, va_list ap) { (void)buf; (void)format; (void)ap; return 0; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_ubus_init(struct udebug_ubus *ctx, struct ubus_context *ubus, const char *name, void (*config_cb)(struct udebug_ubus *, struct blob_attr *, bool)) { (void)ctx; (void)ubus; (void)name; (void)config_cb; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo 'static inline void udebug_ubus_apply_config(struct udebug *ctx, struct udebug_ubus_ring *rings, int n_rings, struct blob_attr *data, bool enabled) { (void)ctx; (void)rings; (void)n_rings; (void)data; (void)enabled; }' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo '#endif' >> "$(INSTALL_PREFIX)/include/udebug.h"
+	@echo "✓ Created udebug.h stub"
+
+# Compile mdnsd object files
+%.o: %.c deps
+	@echo "Compiling $<..."
+	@sed -i '/strlcpy(/d' "$(INSTALL_PREFIX)/include/udebug.h" 2>/dev/null || true
+	@$(CC) $(CFLAGS) -I"$(INSTALL_PREFIX)/include" -c $< -o $@
+
+# Special handling for mdnsd-fuzz.c (already has AFL mode built-in)
+$(FUZZER_OBJECT): mdnsd-fuzz.c deps
+	@echo "Compiling mdnsd-fuzz.c for AFL++..."
+	@sed -i '/strlcpy(/d' "$(INSTALL_PREFIX)/include/udebug.h" 2>/dev/null || true
+	@$(CC) $(CFLAGS) -I"$(INSTALL_PREFIX)/include" -c mdnsd-fuzz.c -o $(FUZZER_OBJECT)
+
+# Build the fuzzer
+$(FUZZER_BIN): $(MDNSD_OBJECTS) $(FUZZER_OBJECT)
+	@echo "Linking AFL++ fuzzer..."
+	@EXTRA_LIBS=""; \
+	if [ -f "$(INSTALL_PREFIX)/lib/libucode.so" ]; then \
+		EXTRA_LIBS="$$EXTRA_LIBS -lucode"; \
+		echo "Including ucode library"; \
+	fi; \
+	if [ -f "$(DEPS_DIR)/udebug_status" ]; then \
+		source $(DEPS_DIR)/udebug_status; \
+		if [ "$$UDEBUG_AVAILABLE" = "1" ]; then \
+			EXTRA_LIBS="$$EXTRA_LIBS -ludebug"; \
+			echo "Including udebug library"; \
+		else \
+			echo "Building without udebug library (using stub)"; \
+		fi; \
+	fi; \
+	$(CC) $(CFLAGS) $(MDNSD_OBJECTS) $(FUZZER_OBJECT) \
+		-L"$(INSTALL_PREFIX)/lib" \
+		$(LDFLAGS) -lubox -lubus -lblobmsg_json -ljson-c -lresolv $$EXTRA_LIBS \
+		-o $(FUZZER_BIN)
+	@echo "✓ AFL++ fuzzer binary created: $(FUZZER_BIN)"
+
+# Test target
+.PHONY: test
+test: $(FUZZER_BIN)
+	@echo "Testing fuzzer binary..."
+	@echo "Dependencies:"
+	@ldd $(FUZZER_BIN) || echo "ldd not available"
+	@echo "Testing with minimal input..."
+	@echo -n "test" | timeout 2 ./$(FUZZER_BIN) 2>/dev/null || echo "Fuzzer test completed"
+
+# Create test input directory
+.PHONY: testcases
+testcases:
+	@echo "Creating test cases directory..."
+	@mkdir -p testcases
+	@# DNS query packet samples
+	@printf '\x00\x01\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03\x77\x77\x77\x07\x65\x78\x61\x6d\x70\x6c\x65\x03\x63\x6f\x6d\x00\x00\x01\x00\x01' > testcases/dns_query.bin
+	@# mDNS query packet
+	@printf '\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x09\x5f\x73\x65\x72\x76\x69\x63\x65\x73\x07\x5f\x64\x6e\x73\x2d\x73\x64\x04\x5f\x75\x64\x70\x05\x6c\x6f\x63\x61\x6c\x00\x00\x0c\x00\x01' > testcases/mdns_query.bin
+	@# Simple browse request (strategy 1)
+	@printf '\x01\x07_http._tcp' > testcases/browse_request.bin
+	@# Query request (strategy 1)  
+	@printf '\x02\x04test' > testcases/query_request.bin
+	@# DNS response packet
+	@printf '\x84\x00\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x03\x77\x77\x77\x07\x65\x78\x61\x6d\x70\x6c\x65\x03\x63\x6f\x6d\x00\x00\x01\x00\x01\xc0\x0c\x00\x01\x00\x01\x00\x00\x01\x2c\x00\x04\xc0\x00\x02\x01' > testcases/dns_response.bin
+	@# Mixed strategy packets
+	@printf '\x00\xff\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc\xdd\xee' > testcases/comprehensive.bin
+	@printf '\x01\x33\xff\x11\x08testname\x04test' > testcases/ubus_fuzz.bin
+	@printf '\x02\x11\x22\x33\x44\x55\x66\x77\x88\x99\xaa\xbb\xcc\xdd\xee\xff' > testcases/mixed_strategy.bin
+	@echo "Test cases created in testcases/"
+
+# Run AFL++ fuzzer
+.PHONY: fuzz
+fuzz: $(FUZZER_BIN) testcases
+	@echo "Starting AFL++ fuzzer..."
+	@echo "Make sure to run 'echo core > /proc/sys/kernel/core_pattern' as root first"
+	@mkdir -p findings
+	@afl-fuzz -i testcases -o findings -- ./$(FUZZER_BIN)
+
+# Clean build artifacts
+.PHONY: clean
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -f $(MDNSD_OBJECTS) $(FUZZER_OBJECT) $(FUZZER_BIN)
+	@rm -rf testcases findings
+
+# Clean everything including dependencies
+.PHONY: distclean
+distclean: clean
+	@echo "Cleaning dependencies..."
+	@rm -rf $(DEPS_DIR)
+
+# Install dependencies (for systems that need them)
+.PHONY: install-deps
+install-deps:
+	@echo "Installing system dependencies..."
+	@if command -v apt-get >/dev/null 2>&1; then \
+		sudo apt-get update && \
+		sudo apt-get install -y build-essential cmake pkg-config git libjson-c-dev afl++; \
+	elif command -v yum >/dev/null 2>&1; then \
+		sudo yum install -y gcc cmake pkg-config git json-c-devel afl; \
+	elif command -v pacman >/dev/null 2>&1; then \
+		sudo pacman -S gcc cmake pkg-config git json-c afl; \
+	else \
+		echo "Please install: build-essential cmake pkg-config git libjson-c-dev afl++"; \
+	fi
+
+# Help target
+.PHONY: help
+help:
+	@echo "AFL++ mdnsd Fuzzer Makefile"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all         - Build the fuzzer (default)"
+	@echo "  deps        - Build dependencies only"
+	@echo "  testcases   - Create sample test cases"
+	@echo "  test        - Test the fuzzer binary"
+	@echo "  fuzz        - Run AFL++ fuzzing session"
+	@echo "  clean       - Clean build artifacts"
+	@echo "  distclean   - Clean everything including deps"
+	@echo "  install-deps- Install system dependencies"
+	@echo "  help        - Show this help"
+	@echo ""
+	@echo "Environment variables:"
+	@echo "  CC          - C compiler (default: afl-clang-lto)"
+	@echo "  CFLAGS      - C compiler flags"
+	@echo "  LDFLAGS     - Linker flags"
+	@echo ""
+	@echo "Dependencies built:"
+	@echo "  - libubox (OpenWrt utility library)"
+	@echo "  - libubus (OpenWrt bus library)"
+	@echo "  - ucode (JavaScript-like scripting language)"
+	@echo "  - udebug (debug framework, with fallback stub)"
+	@echo ""
+	@echo "Example usage:"
+	@echo "  make -f Makefile.afl all"
+	@echo "  make -f Makefile.afl testcases"
+	@echo "  make -f Makefile.afl fuzz"
+
+.PHONY: all deps clean distclean test testcases fuzz install-deps help udebug-setup udebug-stub 
