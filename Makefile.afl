@@ -50,7 +50,7 @@ $(INSTALL_PREFIX)/lib/libubox.so:
 	@cd $(DEPS_DIR)/libubox/build && \
 		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
 		         -DCMAKE_C_COMPILER="$(CC)" \
-		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g -fno-sanitize=address" \
 		         -DBUILD_LUA=OFF \
 		         -DBUILD_EXAMPLES=OFF \
 		         -DBUILD_TESTS=OFF \
@@ -74,7 +74,7 @@ $(INSTALL_PREFIX)/lib/libubus.so: $(INSTALL_PREFIX)/lib/libubox.so
 	@cd $(DEPS_DIR)/ubus/build && \
 		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
 		         -DCMAKE_C_COMPILER="$(CC)" \
-		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g -fno-sanitize=address" \
 		         -DBUILD_LUA=OFF \
 		         -DBUILD_EXAMPLES=OFF \
 		         -DBUILD_TESTS=OFF \
@@ -100,7 +100,7 @@ $(INSTALL_PREFIX)/lib/libucode.so: $(INSTALL_PREFIX)/lib/libubus.so
 	@if cd $(DEPS_DIR)/ucode/build && \
 		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
 		         -DCMAKE_C_COMPILER="$(CC)" \
-		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g -fno-sanitize=address" \
 		         -DBUILD_STATIC=OFF \
 		         -DBUILD_SHARED_LIBS=ON && \
 		make -j$$(nproc) && \
@@ -133,7 +133,7 @@ udebug-setup:
 	@if cd $(DEPS_DIR)/udebug/build && \
 		cmake .. -DCMAKE_INSTALL_PREFIX="$(INSTALL_PREFIX)" \
 		         -DCMAKE_C_COMPILER="$(CC)" \
-		         -DCMAKE_C_FLAGS="-O2 -fPIC -g" \
+		         -DCMAKE_C_FLAGS="-O2 -fPIC -g -fno-sanitize=address" \
 		         -DBUILD_STATIC=OFF \
 		         -DBUILD_SHARED_LIBS=ON && \
 		make -j$$(nproc) && \
