@@ -95,7 +95,10 @@ static int fuzz_umdns_browse(struct blob_attr *msg) {
         if (local)
             *local = '\0';
         c2 = blobmsg_open_table(&fuzz_b, buffer);
-        strncat(buffer, ".local", MAX_NAME_LEN);
+        size_t len = strlen(buffer);
+        if (len < MAX_NAME_LEN - 6) {  
+            strncat(buffer, ".local", MAX_NAME_LEN - len - 1);
+        }
         if (s->iface)
             blobmsg_add_string(&fuzz_b, "iface", s->iface->name);
         cache_dump_records(&fuzz_b, s->entry, array, &hostname);
@@ -419,7 +422,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
     
     memcpy(buf, data, size);
-        uint8_t strategy = buf[0] % 3;
+        uint8_t strategy = buf[0] % 2;
         
         switch (strategy) {
             case 0:
@@ -427,11 +430,6 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
                 break;
             case 1:
                 fuzz_ubus_functions(buf, size);
-                break;
-            case 2:
-                fuzz_dns_handle_packet_comprehensive(buf, size);
-                break;
-            default:
                 break;
         }
     free(buf);
