@@ -23,6 +23,9 @@
 #include "util.h"
 #include "service.h"
 
+// Define maximum DNS packet size (8192 bytes)
+#define MAX_DNS_PACKET_SIZE MDNS_BUF_LEN
+
 int cfg_proto = 0;
 int cfg_no_subnet = 0;
 
@@ -211,7 +214,13 @@ static void setup_ipv6_sockaddr(struct sockaddr_in6 *addr, uint16_t port) {
 }
 
 static bool validate_dns_packet(uint8_t *data, size_t size) {
+    // Check for minimum DNS header size
     if (size < sizeof(struct dns_header)) {
+        return false;
+    }
+    
+    // Enforce maximum packet size
+    if (size > MAX_DNS_PACKET_SIZE) {
         return false;
     }
     
@@ -283,6 +292,11 @@ static struct blob_attr* create_query_blob(uint8_t *data, size_t size) {
 static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
     cache_init();
     
+    // Enforce maximum packet size
+    if (size > MAX_DNS_PACKET_SIZE) {
+        size = MAX_DNS_PACKET_SIZE;
+    }
+    
     if (size < 12) { // DNS header is 12 bytes minimum
         goto cleanup;
     }
@@ -296,6 +310,11 @@ static void fuzz_dns_handle_packet_comprehensive(uint8_t *input, size_t size) {
     
     uint8_t *packet_data = input + 2;
     size_t packet_size = size - 2;
+    
+    // Ensure packet_size doesn't exceed buffer
+    if (packet_size > MAX_DNS_PACKET_SIZE - 2) {
+        packet_size = MAX_DNS_PACKET_SIZE - 2;
+    }
     
     for (int test_case = 0; test_case < 8; test_case++) {
         if ((config & (1 << test_case)) == 0) continue; 
@@ -437,38 +456,38 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 }
 
 
-// #ifndef __AFL_FUZZ_TESTCASE_LEN
+#ifndef __AFL_FUZZ_TESTCASE_LEN
 
-// ssize_t fuzz_len;
-// unsigned char fuzz_buf[1024000];
+ssize_t fuzz_len;
+unsigned char fuzz_buf[1024000];
 
-// #define __AFL_FUZZ_TESTCASE_LEN fuzz_len
-// #define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
-// #define __AFL_FUZZ_INIT() void sync(void);
-// #define __AFL_LOOP(x) \
-//     ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
-// #define __AFL_INIT() sync()
+#define __AFL_FUZZ_TESTCASE_LEN fuzz_len
+#define __AFL_FUZZ_TESTCASE_BUF fuzz_buf  
+#define __AFL_FUZZ_INIT() void sync(void);
+#define __AFL_LOOP(x) \
+    ((fuzz_len = read(0, fuzz_buf, sizeof(fuzz_buf))) > 0 ? 1 : 0)
+#define __AFL_INIT() sync()
 
-// #endif
+#endif
 
-// __AFL_FUZZ_INIT();
+__AFL_FUZZ_INIT();
 
-// #pragma clang optimize off
-// #pragma GCC optimize("O0")
+#pragma clang optimize off
+#pragma GCC optimize("O0")
 
-// int main(int argc, char **argv)
-// {
-//     (void)argc; (void)argv; 
+int main(int argc, char **argv)
+{
+    (void)argc; (void)argv; 
     
-//     ssize_t len;
-//     unsigned char *buf;
+    ssize_t len;
+    unsigned char *buf;
 
-//     __AFL_INIT();
-//     buf = __AFL_FUZZ_TESTCASE_BUF;
-//     while (__AFL_LOOP(INT_MAX)) {
-//         len = __AFL_FUZZ_TESTCASE_LEN;
-//         LLVMFuzzerTestOneInput(buf, (size_t)len);
-//     }
+    __AFL_INIT();
+    buf = __AFL_FUZZ_TESTCASE_BUF;
+    while (__AFL_LOOP(INT_MAX)) {
+        len = __AFL_FUZZ_TESTCASE_LEN;
+        LLVMFuzzerTestOneInput(buf, (size_t)len);
+    }
     
-//     return 0;
-// }
+    return 0;
+}
